@@ -69,8 +69,18 @@ spec:
         value: "${ROLLING_UPDATE_PHASE}"
       - name: ARC_DOCKER_MTU_PROPAGATION
         value: "true"
+      # https://github.com/docker/docs/issues/8663
+      - name: DOCKER_DEFAULT_ADDRESS_POOL_BASE
+        value: "172.17.0.0/12"
+      - name: DOCKER_DEFAULT_ADDRESS_POOL_SIZE
+        value: "24"
+      - name: WAIT_FOR_DOCKER_SECONDS
+        value: "3"
 
       dockerMTU: 1400
+      dockerEnv:
+      - name: RUNNER_GRACEFUL_STOP_TIMEOUT
+        value: "${RUNNER_GRACEFUL_STOP_TIMEOUT}"
 
       # Fix the following no space left errors with rootless-dind runners that can happen while running buildx build:
       #   ------

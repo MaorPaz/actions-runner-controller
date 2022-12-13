@@ -797,7 +797,7 @@ $ helm upgrade --install --namespace actions-runner-system --create-namespace \
 
 The command above will create a new deployment and a service for receiving Github Webhooks on the `actions-runner-system` namespace.
 
-Now we need to expose this service so that GitHub can send these webhooks over the network with TSL protection.
+Now we need to expose this service so that GitHub can send these webhooks over the network with TLS protection.
 
 You can do it in any way you prefer, here we'll suggest doing it with a k8s Ingress.
 For the sake of this example we'll expose this service on the following URL:
@@ -859,6 +859,8 @@ if you followed the example ingress above the URL would be something like this:
 
 > Remember to replace `your.domain.com` with your own domain.
 
+Then click on "Content type" and choose `application/json`.
+
 Then click on "let me select individual events" and choose `Workflow Jobs`.
 
 Then click on `Add Webhook`.
@@ -914,10 +916,9 @@ The main use case for scaling from 0 is with the `HorizontalRunnerAutoscaler` ki
 
 - `TotalNumberOfQueuedAndInProgressWorkflowRuns`
 - `PercentageRunnersBusy` + `TotalNumberOfQueuedAndInProgressWorkflowRuns`
-- `PercentageRunnersBusy` + Webhook-based autoscaling
-- Webhook-based autoscaling only
+- Webhook-based autoscaling
 
-`PercentageRunnersBusy` can't be used alone as, by its definition, it needs one or more GitHub runners to become `busy` to be able to scale. If there isn't a runner to pick up a job and enter a `busy` state then the controller will never know to provision a runner to begin with as this metric has no knowledge of the job queue and is relying on using the number of busy runners as a means for calculating the desired replica count.
+`PercentageRunnersBusy` can't be used alone for scale-from-zero as, by its definition, it needs one or more GitHub runners to become `busy` to be able to scale. If there isn't a runner to pick up a job and enter a `busy` state then the controller will never know to provision a runner to begin with as this metric has no knowledge of the job queue and is relying on using the number of busy runners as a means for calculating the desired replica count.
 
 If a HorizontalRunnerAutoscaler is configured with a secondary metric of `TotalNumberOfQueuedAndInProgressWorkflowRuns` then be aware that the controller will check the primary metric of `PercentageRunnersBusy` first and will only use the secondary metric to calculate the desired replica count if the primary metric returns 0 desired replicas.
 
@@ -1571,15 +1572,57 @@ spec:
   template:
     spec:
       env:
+        # Disable various runner entrypoint log levels 
+        - name: LOG_DEBUG_DISABLED
+          value: "true"
+        - name: LOG_NOTICE_DISABLED
+          value: "true"
+        - name: LOG_WARNING_DISABLED
+          value: "true"
+        - name: LOG_ERROR_DISABLED
+          value: "true"
+        - name: LOG_SUCCESS_DISABLED
+          value: "true"
         # Issues a sleep command at the start of the entrypoint
         - name: STARTUP_DELAY_IN_SECONDS
           value: "2"
+        # Specify the duration to wait for the docker daemon to be available
+        # The default duration of 120 seconds is sometimes too short
+        # to reliably wait for the docker daemon to start
+        # See https://github.com/actions-runner-controller/actions-runner-controller/issues/1804
+        - name: WAIT_FOR_DOCKER_SECONDS
+          value: 120
         # Disables the wait for the docker daemon to be available check
         - name: DISABLE_WAIT_FOR_DOCKER
           value: "true"
         # Disables automatic runner updates
+        # WARNING : Upon a new version of the actions/runner software being released 
+        # GitHub stops allocating jobs to runners on the previous version of the
+        # actions/runner software after 30 days.
         - name: DISABLE_RUNNER_UPDATE
           value: "true"
+```
+
+There are a few advanced envvars also that are available only for dind runners:
+
+```yaml
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: RunnerDeployment
+metadata:
+  name: example-runnerdeployment
+spec:
+  template:
+    spec:
+      dockerdWithinRunnerContainer: true
+      image: summerwind/actions-runner-dind
+      env:
+        # Sets the respective default-address-pools fields within dockerd daemon.json
+        # See https://github.com/actions-runner-controller/actions-runner-controller/pull/1971 for more information.
+        # Also see https://github.com/docker/docs/issues/8663 for the default base/size values in dockerd.
+        - name: DOCKER_DEFAULT_ADDRESS_POOL_BASE
+          value: "172.17.0.0/12"
+        - name: DOCKER_DEFAULT_ADDRESS_POOL_SIZE
+          value: "24"
 ```
 
 ### Using IRSA (IAM Roles for Service Accounts) in EKS
@@ -1590,6 +1633,8 @@ Similar to regular pods and deployments, you firstly need an existing service ac
 Create one using e.g. `eksctl`. You can refer to [the EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) for more details.
 
 Once you set up the service account, all you need is to add `serviceAccountName` and `fsGroup` to any pods that use the IAM-role enabled service account.
+
+`fsGroup` needs to be set to the UID of the `runner` Linux user that runs the runner agent (and dockerd in case you use dind-runner). For anyone using an Ubuntu 20.04 runner image it's `1000` and for Ubuntu 22.04 one it's `1001`.
 
 For `RunnerDeployment`, you can set those two fields under the runner spec at `RunnerDeployment.Spec.Template`:
 
@@ -1604,7 +1649,10 @@ spec:
       repository: USER/REO
       serviceAccountName: my-service-account
       securityContext:
+        # For Ubuntu 20.04 runner
         fsGroup: 1000
+        # Use 1001 for Ubuntu 22.04 runner
+        #fsGroup: 1001
 ```
 ### Software Installed in the Runner Image
 
@@ -1612,14 +1660,15 @@ spec:
 The project supports being deployed on the various cloud Kubernetes platforms (e.g. EKS), it does not however aim to go beyond that. No cloud specific tooling is bundled in the base runner, this is an active decision to keep the overhead of maintaining the solution manageable.
 
 **Bundled Software**<br />
-The GitHub hosted runners include a large amount of pre-installed software packages. GitHub maintains a list in README files at <https://github.com/actions/virtual-environments/tree/main/images/linux>
+The GitHub hosted runners include a large amount of pre-installed software packages. GitHub maintains a list in README files at <https://github.com/actions/virtual-environments/tree/main/images/linux>.
 
-This solution maintains a few runner images with `latest` aligning with GitHub's Ubuntu version, these images do not contain all of the software installed on the GitHub runners. The images contain the following subset of packages from the GitHub runners:
+This solution maintains a few Ubuntu based runner images, these images do not contain all of the software installed on the GitHub runners. The images contain the following subset of packages from the GitHub runners:
 
-- Basic CLI packages
-- git
-- docker
-- build-essentials
+- Some basic CLI packages
+- Git
+- Git LFS
+- Docker
+- Docker Compose
 
 The virtual environments from GitHub contain a lot more software packages (different versions of Java, Node.js, Golang, .NET, etc) which are not provided in the runner image. Most of these have dedicated setup actions which allow the tools to be installed on-demand in a workflow, for example: `actions/setup-java` or `actions/setup-node`
 
@@ -1628,21 +1677,21 @@ If there is a need to include packages in the runner image for which there is no
 ```shell
 FROM summerwind/actions-runner:latest
 
-RUN sudo apt update -y \
-  && sudo apt install YOUR_PACKAGE
+RUN sudo apt-get update -y \
+  && sudo apt-get install $YOUR_PACKAGES
   && sudo rm -rf /var/lib/apt/lists/*
 ```
 
-You can then configure the runner to use a custom docker image by configuring the `image` field of a `Runner` or `RunnerDeployment`:
+You can then configure the runner to use a custom docker image by configuring the `image` field of a `RunnerDeployment` or `RunnerSet`:
 
 ```yaml
 apiVersion: actions.summerwind.dev/v1alpha1
-kind: Runner
+kind: RunnerDeployment
 metadata:
   name: custom-runner
 spec:
   repository: actions-runner-controller/actions-runner-controller
-  image: YOUR_CUSTOM_DOCKER_IMAGE
+  image: YOUR_CUSTOM_RUNNER_IMAGE
 ```
 
 ### Using without cert-manager
@@ -1653,8 +1702,8 @@ There are two methods of deploying without cert-manager, you can generate your o
 
 Assuming you are installing in the default namespace, ensure your certificate has SANs:
 
-* `webhook-service.actions-runner-system.svc`
-* `webhook-service.actions-runner-system.svc.cluster.local`
+* `actions-runner-controller-webhook.actions-runner-system.svc`
+* `actions-runner-controller-webhook.actions-runner-system.svc.cluster.local`
 
 It is possible to use a self-signed certificate by following a guide like
 [this one](https://mariadb.com/docs/security/encryption/in-transit/create-self-signed-certificates-keys-openssl/)
@@ -1663,7 +1712,7 @@ using `openssl`.
 Install your certificate as a TLS secret:
 
 ```shell
-$ kubectl create secret tls webhook-server-cert \
+$ kubectl create secret tls actions-runner-controller-serving-cert \
   -n actions-runner-system \
   --cert=path/to/cert/file \
   --key=path/to/key/file
@@ -1673,7 +1722,7 @@ Set the Helm chart values as follows:
 
 ```shell
 $ CA_BUNDLE=$(cat path/to/ca.pem | base64)
-$ helm --upgrade install actions-runner-controller/actions-runner-controller \
+$ helm upgrade --install actions-runner-controller/actions-runner-controller \
   certManagerEnabled=false \
   admissionWebHooks.caBundle=${CA_BUNDLE}
 ```
@@ -1683,7 +1732,7 @@ $ helm --upgrade install actions-runner-controller/actions-runner-controller \
 Set the Helm chart values as follows:
 
 ```shell
-$ helm --upgrade install actions-runner-controller/actions-runner-controller \
+$ helm upgrade --install actions-runner-controller/actions-runner-controller \
   certManagerEnabled=false
 ```
 
@@ -1736,7 +1785,6 @@ spec:
       labels:
         - windows
         - X64
-        - devops-managed
 ```
 
 #### Dockerfile
@@ -1794,7 +1842,6 @@ spec:
       labels:
         - linux
         - X64
-        - devops-managed
 ```
 </p>
 </details>

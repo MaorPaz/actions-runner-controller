@@ -175,56 +175,6 @@ func (autoscaler *HorizontalRunnerAutoscalerGitHubWebhook) Handle(w http.Respons
 	enterpriseSlug := enterpriseEvent.Enterprise.Slug
 
 	switch e := event.(type) {
-	case *gogithub.PushEvent:
-		target, err = autoscaler.getScaleUpTarget(
-			context.TODO(),
-			log,
-			e.Repo.GetName(),
-			e.Repo.Owner.GetLogin(),
-			e.Repo.Owner.GetType(),
-			// Most go-github Event types don't seem to contain Enteprirse(.Slug) fields
-			// we need, so we parse it by ourselves.
-			enterpriseSlug,
-			autoscaler.MatchPushEvent(e),
-		)
-	case *gogithub.PullRequestEvent:
-		target, err = autoscaler.getScaleUpTarget(
-			context.TODO(),
-			log,
-			e.Repo.GetName(),
-			e.Repo.Owner.GetLogin(),
-			e.Repo.Owner.GetType(),
-			// Most go-github Event types don't seem to contain Enteprirse(.Slug) fields
-			// we need, so we parse it by ourselves.
-			enterpriseSlug,
-			autoscaler.MatchPullRequestEvent(e),
-		)
-
-		if pullRequest := e.PullRequest; pullRequest != nil {
-			log = log.WithValues(
-				"pullRequest.base.ref", e.PullRequest.Base.GetRef(),
-				"action", e.GetAction(),
-			)
-		}
-	case *gogithub.CheckRunEvent:
-		target, err = autoscaler.getScaleUpTarget(
-			context.TODO(),
-			log,
-			e.Repo.GetName(),
-			e.Repo.Owner.GetLogin(),
-			e.Repo.Owner.GetType(),
-			// Most go-github Event types don't seem to contain Enteprirse(.Slug) fields
-			// we need, so we parse it by ourselves.
-			enterpriseSlug,
-			autoscaler.MatchCheckRunEvent(e),
-		)
-
-		if checkRun := e.GetCheckRun(); checkRun != nil {
-			log = log.WithValues(
-				"checkRun.status", checkRun.GetStatus(),
-				"action", e.GetAction(),
-			)
-		}
 	case *gogithub.WorkflowJobEvent:
 		if workflowJob := e.GetWorkflowJob(); workflowJob != nil {
 			log = log.WithValues(
@@ -307,7 +257,7 @@ func (autoscaler *HorizontalRunnerAutoscalerGitHubWebhook) Handle(w http.Respons
 
 	if target == nil {
 		log.V(1).Info(
-			"Scale target not found. If this is unexpected, ensure that there is exactly one repository-wide or organizational runner deployment that matches this webhook event",
+			"Scale target not found. If this is unexpected, ensure that there is exactly one repository-wide or organizational runner deployment that matches this webhook event. If --watch-namespace is set ensure this is configured correctly.",
 		)
 
 		msg := "no horizontalrunnerautoscaler to scale for this github event"

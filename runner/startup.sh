@@ -145,10 +145,14 @@ if [ -z "${UNITTEST:-}" ] && [ -e ./externalstmp ]; then
   mv ./externalstmp/* ./externals/
 fi
 
+WAIT_FOR_DOCKER_SECONDS=${WAIT_FOR_DOCKER_SECONDS:-120}
 if [[ "${DISABLE_WAIT_FOR_DOCKER}" != "true" ]] && [[ "${DOCKER_ENABLED}" == "true" ]]; then
     log.debug 'Docker enabled runner detected and Docker daemon wait is enabled'
-    log.debug 'Waiting until Docker is available or the timeout is reached'
-    timeout 120s bash -c 'until docker ps ;do sleep 1; done'
+    log.debug "Waiting until Docker is available or the timeout of ${WAIT_FOR_DOCKER_SECONDS} seconds is reached"
+    if ! timeout "${WAIT_FOR_DOCKER_SECONDS}s" bash -c 'until docker ps ;do sleep 1; done'; then
+      log.notice "Docker has not become available within ${WAIT_FOR_DOCKER_SECONDS} seconds. Exiting with status 1."
+      exit 1
+    fi
 else
   log.notice 'Docker wait check skipped. Either Docker is disabled or the wait is disabled, continuing with entrypoint'
 fi
@@ -168,5 +172,9 @@ unset RUNNER_NAME RUNNER_REPO RUNNER_TOKEN STARTUP_DELAY_IN_SECONDS DISABLE_WAIT
 if [ -z "${UNITTEST:-}" ]; then
   mapfile -t env </etc/environment
 fi
+
+log.notice "WARNING LATEST TAG HAS BEEN DEPRECATED. SEE GITHUB ISSUE FOR DETAILS:"
+log.notice "https://github.com/actions-runner-controller/actions-runner-controller/issues/2056"
+
 update-status "Idle"
 exec env -- "${env[@]}" ./run.sh
